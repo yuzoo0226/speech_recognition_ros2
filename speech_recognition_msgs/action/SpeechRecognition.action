@@ -1,0 +1,14 @@
+# Define the goal
+string recognition_type
+string dictionary
+string whisper_prompt
+string language
+---
+# Define the result
+string recognition_result
+string language
+float32 temperature
+float32 no_speech_prob
+---
+# Define a feedback message
+string status
