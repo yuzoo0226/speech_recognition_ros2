@@ -29,6 +29,7 @@ setup(
         'console_scripts': [
             'audio_recorder_node = speech_recognition_node.audio_recorder_node:main',
             'speech_recognition_node = speech_recognition_node.speech_recognition_node:main',
+            "utils = speech_recognition_node.utils:main",
         ],
     },
 )

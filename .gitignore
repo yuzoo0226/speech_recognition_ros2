@@ -204,3 +204,5 @@ COLCON_IGNORE
 AMENT_IGNORE
 
 # End of https://www.toptal.com/developers/gitignore/api/ros2,python
+
+speech_recognition_utils/**

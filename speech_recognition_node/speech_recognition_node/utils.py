@@ -3,8 +3,6 @@
 
 import rclpy
 from rclpy.node import Node
-from rclpy.time import Duration
-from std_srvs.srv import SetBool
 from rclpy.action import ActionClient
 from speech_recognition_msgs.action import SpeechRecognition
 
@@ -14,8 +12,9 @@ class RecognitionUtils(Node):
     def __init__(self) -> None:
         super().__init__("speech_recognition_utils")
         self._action_client = ActionClient(self, SpeechRecognition, 'speech_recognition_action')
+        self.is_get_reult = False
 
-    def _send_goal(self, recognition_type: str, language="en", dictionary="", whisper_prompt="", ):
+    def _send_goal(self, recognition_type: str, language="en", dictionary="", whisper_prompt=""):
         goal_msg = SpeechRecognition.Goal()
         goal_msg.recognition_type = recognition_type
         goal_msg.language = language
@@ -36,7 +35,6 @@ class RecognitionUtils(Node):
 
         self.get_logger().info('Goal accepted')
         self._get_result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(self, self._get_result_future)
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def feedback_callback(self, feedback_msg):
@@ -45,9 +43,9 @@ class RecognitionUtils(Node):
     def get_result_callback(self, future):
         result = future.result().result
         self.get_logger().info(f'Result: {result.recognition_result}')
-        rclpy.shutdown()
+        self.result = result.recognition_result
 
-    def run(self):
+    def recognition(self) -> str:
         self._send_goal("whisper")
 
 

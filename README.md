@@ -19,3 +19,10 @@ colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release --package
 source install/setup.bash
 ros2 run audio_common audio_captuer_node
 ```
+
+
+## 認識ノードの軌道
+
+```bash
+ros2 run speech_recognition_node speech_recognition_node
+```
