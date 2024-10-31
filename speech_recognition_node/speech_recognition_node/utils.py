@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-
-
 import rclpy
 from rclpy.node import Node
 from rclpy.time import Duration

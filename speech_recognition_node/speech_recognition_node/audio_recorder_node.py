@@ -5,7 +5,6 @@ import wave
 import struct
 import numpy as np
 from typing import List
-# from silero_vad import VADIterator, load_silero_vad
 
 import rclpy
 from rclpy.node import Node
@@ -101,34 +100,7 @@ class SileroVadNode(Node):
         self._rate = msg.audio.info.rate
         self._chunk = msg.audio.info.chunk
 
-        # audio_array = self.int2float(msg_to_array(msg.audio))
         audio_array = msg_to_array(msg.audio)
-
-        # if audio_array is None:
-        #     self.get_logger().error(f"Format {msg.audio.info.format} unknown")
-        #     return
-        # speech_dict = self.vad_iterator(audio_array)
-
-        # if speech_dict:
-        #     self.get_logger().info(str(speech_dict))
-
-        #     if not self.recording and "start" in speech_dict:
-        #         self.recording = True
-        #         self.data = []
-
-        #     elif self.recording and "end" in speech_dict:
-        #         self.recording = False
-        #         self.data.extend(audio_array.tolist())
-
-        #         if len(self.data) / msg.audio.info.rate < 1.0:
-        #             pad_size = (
-        #                 msg.audio.info.chunk + msg.audio.info.rate - len(self.data)
-        #             )
-        #             self.data.extend(pad_size * [0.0])
-
-        #         vad_msg = Float32MultiArray()
-        #         vad_msg.data = self.data
-        #         self._pub.publish(vad_msg)
 
         if self.recording:
             self.data.extend(audio_array.tolist())

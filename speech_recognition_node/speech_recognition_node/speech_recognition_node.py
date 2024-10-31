@@ -12,9 +12,6 @@ import pprint
 import pyaudio
 import openai
 from rclpy.executors import MultiThreadedExecutor
-# 音声認識関連
-# import whisper
-# from vosk import Model, KaldiRecognizer
 
 # silero_vad
 import torch
@@ -24,13 +21,9 @@ import collections
 import torchaudio
 torchaudio.set_audio_backend("soundfile")
 
-# ros messages
 from std_msgs.msg import String, Float32
 from audio_common_msgs.msg import AudioData
 from speech_recognition_msgs.action import SpeechRecognition
-# from tam_speech_recog.msg import SpeechRecognitionAction
-# from tam_speech_recog.msg import SpeechRecognitionFeedback
-# from tam_speech_recog.msg import SpeechRecognitionResult
 
 from std_srvs.srv import SetBool
 
@@ -40,6 +33,10 @@ from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Duration
 from rclpy.action import ActionServer
 
+from audio_common.utils import msg_to_array, msg_to_data
+from audio_common_msgs.msg import AudioStamped
+from ament_index_python.packages import get_package_share_directory
+
 # # 音声強調に必要なモジュール
 # sys.path.append(roslib.packages.get_pkg_dir("tam_speech_recog"))
 # from include.sgmse.sgmse.model import ScoreModel
@@ -48,10 +45,6 @@ from rclpy.action import ActionServer
 # from soundfile import write
 # from torchaudio import load
 # from os.path import join
-
-from audio_common.utils import msg_to_array, msg_to_data
-from audio_common_msgs.msg import AudioStamped
-from ament_index_python.packages import get_package_share_directory
 
 
 class SpeechRecognitionServer(Node):
@@ -173,7 +166,7 @@ class SpeechRecognitionServer(Node):
         # self.model_vosk = Model(lang="en-us")
 
         # pyaudioを初期化
-        self.p = pyaudio.PyAudio()
+        # self.p = pyaudio.PyAudio()
 
         # ストリームを開始
         # self.stream = self.p.open(
