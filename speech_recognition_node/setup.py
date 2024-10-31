@@ -1,3 +1,6 @@
+import os
+import sys
+import glob
 from setuptools import find_packages, setup
 
 package_name = 'speech_recognition_node'
@@ -10,6 +13,10 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share/' + package_name, "io/audio"), glob.glob("io/audio/*.wav")),
+        (os.path.join('share/' + package_name, "io/audio"), glob.glob("io/audio/*.mp3")),
+        (os.path.join('share/' + package_name, "io/output"), glob.glob("io/output/*.wav")),
+        (os.path.join('share/' + package_name, "io/prompts"), glob.glob("io/prompts/*.py")),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -21,6 +28,7 @@ setup(
     entry_points={
         'console_scripts': [
             'audio_recorder_node = speech_recognition_node.audio_recorder_node:main',
+            'speech_recognition_node = speech_recognition_node.speech_recognition_node:main',
         ],
     },
 )

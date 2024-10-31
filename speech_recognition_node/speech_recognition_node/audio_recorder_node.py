@@ -1,27 +1,6 @@
 #!/usr/bin/env python3
 
-# MIT License
-
-# Copyright (c) 2023  Miguel Ángel González Santamarta
-
-# Permission is hereby granted, free of charge, to any person obtaining a copy
-# of this software and associated documentation files (the "Software"), to deal
-# in the Software without restriction, including without limitation the rights
-# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-# copies of the Software, and to permit persons to whom the Software is
-# furnished to do so, subject to the following conditions:
-
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-
-# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-# SOFTWARE.
-
+import os
 import wave
 import struct
 import numpy as np
@@ -36,13 +15,14 @@ from std_srvs.srv import SetBool
 
 from audio_common.utils import msg_to_array
 from audio_common_msgs.msg import AudioStamped
+from ament_index_python.packages import get_package_share_directory
 
 
 class SileroVadNode(Node):
 
     def __init__(self) -> None:
 
-        super().__init__("silero_vad_node")
+        super().__init__("audio_recorder_node")
 
         self.recording = True
         self.data: List[int] = []
@@ -53,16 +33,10 @@ class SileroVadNode(Node):
         self.threshold = self.chunk = (self.get_parameter("threshold").get_parameter_value().double_value)
         self.record_duration = 5  # sec
 
-        # # create silero model
-        # model = load_silero_vad(onnx=True)
-        # self.vad_iterator = VADIterator(model, threshold=self.threshold)
-
-        # srvs, subs, pubs
-        # self._enable_srv = self.create_service(SetBool, "enable_vad", self.enable_cb)
-        # self._pub = self.create_publisher(Float32MultiArray, "vad", 10)
+        self.output_dir = os.path.join(get_package_share_directory('speech_recognition_node'), 'io/output')
         self._sub = self.create_subscription(AudioStamped, "audio", self.audio_cb, qos_profile_sensor_data)
 
-        self.get_logger().info("Silero VAD node started")
+        self.get_logger().info("audio recorder node started")
 
     @staticmethod
     def int2float(audio_data: np.ndarray) -> np.ndarray:
@@ -103,18 +77,19 @@ class SileroVadNode(Node):
         """
         # ファイル名を生成
         filename = "output_audio_" + str(int(np.random.rand() * 10000)) + ".wav"
+        output_path = os.path.join(self.output_dir, filename)
 
         # Waveファイルの書き出し
-        with wave.open(filename, 'w') as wf:
+        with wave.open(output_path, 'w') as wf:
             wf.setnchannels(self._channels)
             wf.setsampwidth(2)
             wf.setframerate(self._rate)
             byte_data = struct.pack('<' + 'h' * len(audio_data), *audio_data)
             wf.writeframes(byte_data)
 
-        print(f"Saved {filename}")
+        print(f"\n Saved: {output_path}")
 
-        return filename
+        return output_path
 
     def audio_cb(self, msg: AudioStamped) -> None:
 
@@ -157,9 +132,7 @@ class SileroVadNode(Node):
 
         if self.recording:
             self.data.extend(audio_array.tolist())
-            print(type(self.data))
-            print(type(self.data[0]))
-            print(len(self.data) / msg.audio.info.rate)
+            print(f"\r recording ... {len(self.data) / msg.audio.info.rate}[sec] / {self.record_duration}[sec]", end="")
             if len(self.data) / msg.audio.info.rate > self.record_duration:
                 self.save_audio_to_wav(self.data)
                 self.data = []

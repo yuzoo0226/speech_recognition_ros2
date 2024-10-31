@@ -7,14 +7,11 @@ import sys
 import time
 import json
 import wave
-import rospy
 import shutil
 import pprint
-import roslib
 import pyaudio
-import actionlib
 import openai
-
+from rclpy.executors import MultiThreadedExecutor
 # 音声認識関連
 # import whisper
 # from vosk import Model, KaldiRecognizer
@@ -30,16 +27,18 @@ torchaudio.set_audio_backend("soundfile")
 # ros messages
 from std_msgs.msg import String, Float32
 from audio_common_msgs.msg import AudioData
-from tam_speech_recog.msg import SpeechRecognitionAction
-from tam_speech_recog.msg import SpeechRecognitionFeedback
-from tam_speech_recog.msg import SpeechRecognitionResult
+from speech_recognition_msgs.action import SpeechRecognition
+# from tam_speech_recog.msg import SpeechRecognitionAction
+# from tam_speech_recog.msg import SpeechRecognitionFeedback
+# from tam_speech_recog.msg import SpeechRecognitionResult
 
 from std_srvs.srv import SetBool
-from tamlib.node_template import Node
 
-# 辞書設定の読み込み
-sys.path.append(roslib.packages.get_pkg_dir("tam_speech_recog") + "/io")
-from dictionary import *
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Duration
+from rclpy.action import ActionServer
 
 # # 音声強調に必要なモジュール
 # sys.path.append(roslib.packages.get_pkg_dir("tam_speech_recog"))
@@ -50,8 +49,12 @@ from dictionary import *
 # from torchaudio import load
 # from os.path import join
 
+from audio_common.utils import msg_to_array, msg_to_data
+from audio_common_msgs.msg import AudioStamped
+from ament_index_python.packages import get_package_share_directory
 
-class SpeechRecogServer(Node):
+
+class SpeechRecognitionServer(Node):
     """
     音声認識を行うクラス
     アクションサーバによって実装している
@@ -61,9 +64,8 @@ class SpeechRecogServer(Node):
         """
         マイクの設定とrosインタフェースの初期化
         """
-        super().__init__(loglevel="DEBUG")
+        super().__init__("speech_recognition_node")
         self.action_signal = False
-
 
         ###################################################
         # ROSPARAMの読み込み
@@ -80,34 +82,39 @@ class SpeechRecogServer(Node):
         self.declare_parameter("speech_recognition/time_out", 10)
         self.declare_parameter("speech_recognition/beep_sound", True)
 
-        self.sampling_rate = self.get_parameter("speech_recognition/sampling_rate")
-        self.channels = self.get_parameter("speech_recognition/channels")
-        self.sample_width = self.get_parameter("speech_recognition/sample_width")
-        self.chunk = self.get_parameter("speech_recognition/chunk")
-        self.output_flag = self.get_parameter("speech_recognition/output")
-        self.vad_aggressiveness = self.get_parameter("speech_recognition/vad_aggressiveness")
-        self.flag_save_as = self.get_parameter("speech_recognition/save_as")
-        self.whisper_model_type = self.get_parameter("speech_recognition/whisper_model")
-        self.time_out = self.get_parameter("speech_recognition/time_out")
-        self.beep_sound = self.get_parameter("speech_recognition/beep_sound")
+        self.sampling_rate = self.get_parameter("speech_recognition/sampling_rate").value
+        self.channels = self.get_parameter("speech_recognition/channels").value
+        self.sample_width = self.get_parameter("speech_recognition/sample_width").value
+        self.chunk = self.get_parameter("speech_recognition/chunk").value
+        self.output_flag = self.get_parameter("speech_recognition/output").value
+        self.vad_aggressiveness = self.get_parameter("speech_recognition/vad_aggressiveness").value
+        self.flag_save_as = self.get_parameter("speech_recognition/save_as").value
+        self.whisper_model_type = self.get_parameter("speech_recognition/whisper_model").value
+        self.time_out = self.get_parameter("speech_recognition/time_out").value
+        self.beep_sound = self.get_parameter("speech_recognition/beep_sound").value
 
-        # 音声データをsubscribeするSubscriberを作成
-        self.mic = AudioData()
-        self.sub_register("mic", "microphone/data", queue_size=10, callback_func=self.run)
+        self.output_dir = os.path.join(get_package_share_directory('speech_recognition_node'), 'io/output')
 
-        # オーディオデータのサービスに関するインタフェース
-        rospy.wait_for_service('/audio_publisher/run_enable')
-        self.srv_audio_publisher = rospy.ServiceProxy('/audio_publisher/run_enable', SetBool)
+        # ros interface
+        self._audio_sub = self.create_subscription(AudioStamped, "audio", self.audio_cb, qos_profile_sensor_data)
+
+        # TODO(yano) Audio messageの配信ノードの動作開始/ストップの制御
+        # self.srv_audio_publisher = self.create_client(SetBool, '/audio_publisher/run_enable')
+        # while not self.srv_audio_publisher.wait_for_service(timeout_sec=1.0):
+        #     self.get_logger().info('Service /audio_publisher/run_enable is not available, waiting...')
+
+        # rospy.wait_for_service('/audio_publisher/run_enable')
+        # self.srv_audio_publisher = rospy.ServiceProxy('/audio_publisher/run_enable', SetBool)
 
         if self.flag_save_as:
 
             # 現在の日付と時刻を取得してフォルダを作成
             timestamp = time.strftime("%Y%m%d-%H%M%S")
-            self.audio_data_dir = roslib.packages.get_pkg_dir("tam_speech_recog") + "/io/audiodata/" + timestamp + "/"
+            self.audio_data_dir = os.path.join(get_package_share_directory('speech_recognition_node'), f"io/output/{timestamp}/")
 
             os.makedirs(self.audio_data_dir)
-            self.loginfo("\"save as\" is True")
-            self.loginfo(("create new dir: " + self.audio_data_dir))
+            self.get_logger().info("\"save as\" is True")
+            self.get_logger().info(("create new dir: " + self.audio_data_dir))
 
             # インクリメントする変数を初期化
             self.save_counter = 1
@@ -115,7 +122,7 @@ class SpeechRecogServer(Node):
 
             # 認識結果を保存するためのcsvファイルを用意する
             self.csv_path = self.audio_data_dir + "result.csv"
-            self.loginfo(("create new csv: " + self.csv_path))
+            self.get_logger().info(("create new csv: " + self.csv_path))
 
             # csvファイルのヘッダを作成
             csv_header = ["ファイル名", "辞書", "認識モデル", "認識結果（置換前）"]
@@ -124,8 +131,10 @@ class SpeechRecogServer(Node):
                 writer.writerow(csv_header)
 
         else:
-            self.loginfo("\"save as\" is False")
-            self.audio_path = roslib.packages.get_pkg_dir("tam_speech_recog") + "/io/audiodata/audio.wav"
+            self.get_logger().info("\"save as\" is False")
+            self.audio_data_dir = os.path.join(get_package_share_directory('speech_recognition_node'), f"io/output")
+            self.audio_path = os.path.join(self.audio_data_dir, "audio.wav")
+            # self.audio_path = roslib.packages.get_pkg_dir("tam_speech_recog") + "/io/audiodata/audio.wav"
 
         # 音声データを保存するリスト
         self.voiced_frames = []
@@ -136,15 +145,16 @@ class SpeechRecogServer(Node):
 
         # アクションサーバからの信号をもとにしたフラグ
         self.recognition_result = None
-        self.recog_type = "whisper"
+        self.recognition_type = "whisper"
 
         # 音声保存処理に関するフラグなど
         self.triggered_start = False
         self.triggered_end = False
 
         # whisperのプロンプト辞書読み込み
-        if self.recog_type == "whisper":
-            self.promt_dicts = self.load_prompt()
+        if self.recognition_type == "whisper":
+            pass
+            # self.promt_dicts = self.load_prompt()
         else:
             # voskにおける辞書の読み込み
             self.dicts = self.load_dictionary()
@@ -175,11 +185,11 @@ class SpeechRecogServer(Node):
         # )
 
         # 話している時間のタイムアウト処理のための変数初期化
-        self.record_start_time = rospy.Time.now()
+        self.record_start_time = self.get_clock().now()
 
         # Image pub
-        self.image = rospy.Publisher('/show_image/data', Image, queue_size=10)
-        self.bridge = CvBridge()
+        # self.image = rospy.Publisher('/show_image/data', Image, queue_size=10)
+        # self.bridge = CvBridge()
 
         # # 音声強調に必要なパラメタ
         # self.corrector_steps = 1
@@ -205,50 +215,60 @@ class SpeechRecogServer(Node):
         self.check_authenticate()
 
         # 音声認識部をアクションサーバとして実装
-        self.action_server_register("speech_recog", "tam_speech_recognition", SpeechRecognitionAction, self.cb_recognition)
+        # self.action_server_register("speech_recog", "tam_speech_recognition", SpeechRecognitionAction, self.cb_recognition)
+        self._sr_action_server = ActionServer(self, SpeechRecognition, 'speech_recognition_action', self.cb_recognition)
 
-        self.logsuccess("ready to speech recognition")
+        self.get_logger().info("ready to speech recognition")
 
         self.count = 0
         self.num_ave = 0
 
-    def check_authenticate(self):
+        self.whisper_prompt = ""
+        self.language = ""
+        self.dictionary = ""
+
+    def check_authenticate(self) -> bool:
+        """OpenAIのAPIキーが認証されているかを検証する関数
+
+        Returns:
+            bool: 認証が通ればTrue, 通らなければFalse
+        """
         try:
-            _ = openai.Model.list()
-        except openai.error.AuthenticationError:
-            self._logger.error("OPENAI_API authenticate is failed")
+            _ = openai.models.list()
+        except openai.AuthenticationError:
+            self.get_logger().error("OPENAI_API authenticate is failed")
             return False
         except Exception as e:
-            self._logger.error(e)
+            self.get_logger().error(f"{e}")
             return False
         self._logger.info("OPENAI API authenticate is success")
         return True
 
-    def load_dictionary(self, show_dicts=True) -> dict:
-        """
-        voskでの音声認識で使用できるような形に辞書を整形する関数
-        """
-        # 音声認識の辞書の作成
-        dicts = {}
-        # dictionary.pyから読み込んだ辞書型変数を基に，音声認識用の辞書を作成
-        for dict_name, dict_values in GP_DICTIONARY.items():
-            temp_dictionary = "[\""
+    # def load_dictionary(self, show_dicts=True) -> dict:
+    #     """
+    #     voskでの音声認識で使用できるような形に辞書を整形する関数
+    #     """
+    #     # 音声認識の辞書の作成
+    #     dicts = {}
+    #     # dictionary.pyから読み込んだ辞書型変数を基に，音声認識用の辞書を作成
+    #     for dict_name, dict_values in GP_DICTIONARY.items():
+    #         temp_dictionary = "[\""
 
-            for dict_value in dict_values:
-                temp_dictionary = temp_dictionary + dict_value + " "
+    #         for dict_value in dict_values:
+    #             temp_dictionary = temp_dictionary + dict_value + " "
 
-            temp_dictionary = temp_dictionary[:-1] + "\"]"  # 最後のスペースを削除した上で，voskに合わせて整形
-            temp_dictionary_unk = temp_dictionary[:-2] + "\", \"[unk]\"]"  # unknownを追加した辞書も自動で作成
+    #         temp_dictionary = temp_dictionary[:-1] + "\"]"  # 最後のスペースを削除した上で，voskに合わせて整形
+    #         temp_dictionary_unk = temp_dictionary[:-2] + "\", \"[unk]\"]"  # unknownを追加した辞書も自動で作成
 
-            dict_name_with_unk = dict_name + "_unk"
-            dicts[dict_name] = temp_dictionary  # 作成した音声認識用の辞書を辞書型配列に保存
-            dicts[dict_name_with_unk] = temp_dictionary_unk
+    #         dict_name_with_unk = dict_name + "_unk"
+    #         dicts[dict_name] = temp_dictionary  # 作成した音声認識用の辞書を辞書型配列に保存
+    #         dicts[dict_name_with_unk] = temp_dictionary_unk
 
-        if show_dicts:
-            self.loginfo("辞書一覧")
-            pprint.pprint(dicts)  # 確認用
+    #     if show_dicts:
+    #         self.get_logger().info("辞書一覧")
+    #         pprint.pprint(dicts)  # 確認用
 
-        return dicts
+    #     return dicts
 
     def load_prompt(self, show_dicts=True) -> dict:
         """
@@ -261,7 +281,7 @@ class SpeechRecogServer(Node):
             prompt_dicts[dict_name] = ", ".join(dict_values)
 
         if show_dicts:
-            self.loginfo("辞書一覧")
+            self.get_logger().info("辞書一覧")
             pprint.pprint(prompt_dicts)  # 確認用
 
         return prompt_dicts
@@ -272,9 +292,9 @@ class SpeechRecogServer(Node):
         """
         try:
             self.srv_audio_publisher(True)
-            self.logsuccess("start audio publisher!!")
+            self.get_logger().info("start audio publisher!!")
         except Exception as e:
-            self.logwarn("cannot start audio publisher")
+            self.get_logger().warn("cannot start audio publisher")
             self.logerr(e)
 
     def audio_publish_stop(self) -> None:
@@ -284,44 +304,52 @@ class SpeechRecogServer(Node):
         try:
             self.srv_audio_publisher(False)
         except Exception as e:
-            self.logwarn("cannot stop audio publisher")
+            self.get_logger().warn("cannot stop audio publisher")
             self.logerr(e)
 
-    def cb_recognition(self, goal) -> None:
+    def cb_recognition(self, goal_handle: SpeechRecognition.Goal) -> SpeechRecognition.Result:
         """
         音声認識のアクションが呼び出されたときのコールバック関数
         """
         # サービスを用いて，マイクデータのpublishを開始する
-        self.time_out = rospy.get_param(rospy.get_name() + "/time_out", 10)
-        self.audio_publish_start()
-        # 音声データの受信を開始
+        self.time_out = self.get_parameter("speech_recognition/time_out").value
+
+        # TODO(yano) 音声データの受信を開始
+        # self.audio_publish_start()
+
         self.action_signal = True
-        self.recog_type = goal.recog_type.data
-        self.dictionary = goal.dictionary.data
-        self.whisper_prompt = goal.whisper_prompt.data
-        self.language = goal.language.data
+        self.recognition_type = goal_handle.request.recognition_type
+        self.dictionary = goal_handle.request.dictionary
+        self.whisper_prompt = goal_handle.request.whisper_prompt
+        self.language = goal_handle.request.language
+
+        self.get_logger().info(f"recognition_type: {self.recognition_type}")
+        self.get_logger().info(f"dictionary: {self.dictionary}")
+        self.get_logger().info(f"whisper_prompt: {self.whisper_prompt}")
+        self.get_logger().info(f"language: {self.language}")
 
         # 音声認識の結果が出るまで待機
         # self.action_signalは音声認識結果が得られた時点でFalseに変わる
-        start_time = rospy.Time.now()
+        start_time = self.get_clock().now()
         while self.action_signal:
-            if (rospy.Time.now() - start_time) > rospy.Duration(30):  # 30
+            if (self.get_clock().now() - start_time) > Duration(seconds=30):  # 30
                 self.action_signal = False
                 self.beep_sound = True
                 # self.ring_buffer.clear()
-                self.loginfo("タイムアウトによる音声認識の強制終了")
-            rospy.sleep(1.5)
+                self.get_logger().info("タイムアウトによる音声認識の強制終了")
+            self.get_clock().sleep_for(Duration(seconds=1.5))
 
         # 認識結果をクライアントに送信
-        result = SpeechRecognitionResult()
-        result.recognition_result = String(self.recognition_result)
-        result.temperature = Float32(self.temperature)
-        result.no_speech_prob = Float32(self.no_speech_prob)
-        result.language = String(self.language)
-        self.action.server.speech_recog.set_succeeded(result)
+        result = SpeechRecognition.Result()
+        result.recognition_result = self.recognition_result
+        result.temperature = self.temperature
+        result.no_speech_prob = self.no_speech_prob
+        result.language = self.language
+        goal_handle.succeed()
 
-        # 音声データのパブリッシュを停止
-        self.audio_publish_stop()
+        # TODO(yano) 音声データのパブリッシュを停止
+        # self.audio_publish_stop()
+        return result
 
     def delete(self) -> bool:
         """
@@ -339,11 +367,11 @@ class SpeechRecogServer(Node):
         abs_max = np.abs(sound).max()
         sound = sound.astype('float32')
         if abs_max > 0:
-            sound *= 1/32768
+            sound *= 1 / 32768
         sound = sound.squeeze()  # depends on the use case
         return sound
 
-    def is_speech_by_silero_vad(self, audio_chunk: bytes, th=0.6) -> bool:
+    def is_speech_by_silero_vad(self, audio_chunk: bytes, th=0.0001) -> bool:
         """
         silerovadによる発話検出
         Args:
@@ -353,24 +381,24 @@ class SpeechRecogServer(Node):
             bool 話していると検知した場合True
         """
         audio_int16 = np.frombuffer(audio_chunk, np.int16)
-
         audio_float32 = self.int2float(audio_int16)
 
         # get the confidences and add them to the list to plot them later
         confidence = self.silero_vad_model(torch.from_numpy(audio_float32), 16000).item()
-        print(confidence)
+        self.get_logger().info(f"confidence: {confidence}")
 
         if confidence > th:
             return True
         else:
             return False
 
-    def run(self, msg) -> None:
+    def audio_cb(self, msg: AudioStamped) -> None:
         """
         オーディオデータを受信し，喋っている区間のみの録音を行う関数
         """
 
-        considering_frame = rospy.get_param(rospy.get_name() + "/considering_frame", 10)
+        # considering_frame = rospy.get_param(rospy.get_name() + "/considering_frame", 10)
+        self.considering_frame = 0
 
         # アクションから音声認識開始の信号を受信するまで処理を行わない
         if self.action_signal is False:
@@ -386,18 +414,23 @@ class SpeechRecogServer(Node):
         #     self.image.publish(img_msg)
 
         # オーディオデータの受信を開始
-        feedback = SpeechRecognitionFeedback(status=String("listening (not recording)"))
-        self.action.server.speech_recog.publish_feedback(feedback)
+        # feedback = SpeechRecognitionFeedback(status=String("listening (not recording)"))
+        # self.action.server.speech_recog.publish_feedback(feedback)
         # self.sr_server.publish_feedback(feedback)
-        self.beep_sound = False
+        # self.beep_sound = False
 
-        self.current_frame = msg.data
+        self._format = msg.audio.info.format
+        self._channels = msg.audio.info.channels
+        self._rate = msg.audio.info.rate
+        self._chunk = msg.audio.info.chunk
+
+        self.current_frame = msg_to_data(msg.audio)
         if self.output_flag:
             pass
             # self.stream.write(self.current_frame)
 
-        # is_speech = self.vad.is_speech(self.current_frame, self.sampling_rate)
-        is_speech = self.is_speech_by_silero_vad(self.current_frame)
+        # is_speech = self.vad.is_speech(self.current_frame, self.sampling_rate)  # vad
+        is_speech = self.is_speech_by_silero_vad(self.current_frame)  # silero-vad
 
         # 話はじめの検知
         # リングバッファに音声をためつつ，話し始めるまで検証を続ける
@@ -419,10 +452,11 @@ class SpeechRecogServer(Node):
                 # self.ring_buffer.clear()  # 不要なリングバッファに入っているデータを削除
                 # self.ring_buffer_w_past.clear()  # 不要なリングバッファに入っているデータを削除
 
-                self.loginfo("start recording")
+                self.get_logger().info("start recording")
 
                 # 話しはじめの時間を保持（タイムアウト処理のため）
-                self.record_start_time = rospy.Time.now()
+                self.record_start_time = self.get_clock().now()
+                # self.record_start_time = self.get_clock().now()
 
         # 話終わりの検知
         # 一定フレーム以上話していないと検出したら，録音を停止
@@ -438,13 +472,13 @@ class SpeechRecogServer(Node):
             if num_unvoiced < 0.01 * self.ring_buffer.maxlen:
                 self.num_ave += num_unvoiced
                 self.count += 1
-                if self.count > considering_frame:
+                if self.count > self.considering_frame:
                     if self.num_ave < 0.3 * self.ring_buffer.maxlen:
                         self.triggered_end = True
                         self.count = 0
                 # self.triggered_start = False
 
-            if (rospy.Time.now() - self.record_start_time) > rospy.Duration(self.time_out):
+            if (self.get_clock().now() - self.record_start_time) > Duration(seconds=self.time_out):
                 self.triggered_end = True
                 # self.triggered_start = False
 
@@ -454,29 +488,28 @@ class SpeechRecogServer(Node):
             # 別名保存するモードの場合
             if self.flag_save_as:
                 self.audio_path = self.audio_data_dir + str(self.save_counter) + ".wav"
-                self.logdebug("save wave file as" + self.audio_path)
+                self.get_logger().debug("save wave file as" + self.audio_path)
                 self.save_counter += 1
 
-            self.loginfo("stop recording")
+            self.get_logger().info("stop recording")
             self.make_wave_file(self.audio_path)
 
             # アクションから与えられた信号をもとに，音声認識のモデルなどを変更するchange
-            if self.recog_type == "vosk":
+            if self.recognition_type == "vosk":
                 self.recognition_result = self.speech_recog_vosk(self.audio_path, self.dictionary)
-            elif self.recog_type == "whisper":
+            elif self.recognition_type == "whisper":
                 self.recognition_result, self.temperature, self.no_speech_prob, self.language = self.speech_recog_whisper(self.audio_path, self.whisper_prompt, self.language)
             else:
                 self.recognition_result, self.temperature, self.no_speech_prob, self.language = self.speech_recog_whisper(self.audio_path, self.whisper_prompt, self.language)
 
-            current_result = [str(self.save_counter - 1), self.dictionary, self.recog_type, self.whisper_prompt, self.recognition_result]
+            current_result = [str(self.save_counter - 1), self.dictionary, self.recognition_type, self.whisper_prompt, self.recognition_result]
 
             with open(self.csv_path, "a", newline='\n') as file:
-                self.logdebug("dump result")
+                self.get_logger().debug("dump result")
                 writer = csv.writer(file)
                 writer.writerow(current_result)
 
             # 次の入力に備える
-            # self.ring_buffer.clear()
             self.ring_buffer.clear()  # 不要なリングバッファに入っているデータを削除
             self.ring_buffer_w_past.clear()  # 不要なリングバッファに入っているデータを削除
             self.beep_sound = True
@@ -513,44 +546,46 @@ class SpeechRecogServer(Node):
         self.stt_model = "whisper-1"
         file = open(path, "rb")
         if language == "":
-            self.logdebug("whisperによる音声認識: 言語指定なし")
+            self.get_logger().debug("whisperによる音声認識: 言語指定なし")
             if whisper_prompt == "":
-                self.logdebug("whisperによる音声認識: プロンプト指定なし")
-                transcript = openai.Audio.transcribe(model=self.stt_model, file=file, response_format="verbose_json")
+                self.get_logger().debug("whisperによる音声認識: プロンプト指定なし")
+                transcription = openai.audio.transcriptions.create(model=self.stt_model, file=file, response_format="verbose_json")
                 # result = self.model_whisper.transcribe(path, no_speech_threshold=0.7)
             else:
-                self.logdebug("whisperによる音声認識: プロンプト指定あり")
-                transcript = openai.Audio.transcribe(model=self.stt_model, file=file, response_format="verbose_json")
+                self.get_logger().debug("whisperによる音声認識: プロンプト指定あり")
+                transcription = openai.audio.transcriptions.create(model=self.stt_model, file=file, response_format="verbose_json")
                 # result = self.model_whisper.transcribe(path, initial_prompt=whisper_prompt, no_speech_threshold=0.7)
         else:
-            self.logdebug("whisperによる音声認識: 言語指定あり")
+            self.get_logger().debug("whisperによる音声認識: 言語指定あり")
             if whisper_prompt == "":
-                self.logdebug("whisperによる音声認識: プロンプト指定なし")
-                transcript = openai.Audio.transcribe(model=self.stt_model, file=file, response_format="verbose_json")
+                self.get_logger().debug("whisperによる音声認識: プロンプト指定なし")
+                transcription = openai.audio.transcriptions.create(model=self.stt_model, file=file, response_format="verbose_json")
                 # result = self.model_whisper.transcribe(path, language=language, no_speech_threshold=0.7)
             else:
-                self.logdebug("whisperによる音声認識: プロンプト指定あり")
-                transcript = openai.Audio.transcribe(model=self.stt_model, file=file, response_format="verbose_json")
+                self.get_logger().debug("whisperによる音声認識: プロンプト指定あり")
+                transcription = openai.audio.transcriptions.create(model=self.stt_model, file=file, response_format="verbose_json")
                 # result = self.model_whisper.transcribe(path, language=language, initial_prompt=whisper_prompt, no_speech_threshold=0.7)
-        result = transcript
 
-        # print(result)
+        result = transcription
+        self.get_logger().info(f"whisper verbose result: {result}")
+        self.get_logger().info(f"result.txt type: {type(result.text)}")
+
         worst_temperature = 0.0
         worst_no_speech_prob = 0.0
-        for segment in result["segments"]:
-            if worst_temperature < segment["temperature"]:
-                worst_temperature = segment["temperature"]
-            if worst_no_speech_prob < segment["no_speech_prob"]:
-                worst_no_speech_prob = segment["no_speech_prob"]
+        for segment in result.segments:
+            if worst_temperature < segment.temperature:
+                worst_temperature = segment.temperature
+            if worst_no_speech_prob < segment.no_speech_prob:
+                worst_no_speech_prob = segment.no_speech_prob
 
-        if result["language"] == "japanese":
+        if result.language == "japanese":
             return_language = "ja"
-        elif result["language"] == "japanese":
+        elif result.language == "english":
             return_language = "en"
         else:
-            return_language = result["language"]
+            return_language = result.language
 
-        return result["text"], worst_temperature, worst_no_speech_prob, return_language
+        return result.text, worst_temperature, worst_no_speech_prob, return_language
 
     def speech_recog_vosk(self, path: str, dictionary_type: str, return_all=False, show_all_result=False) -> str:
         """voskを用いた音声認識用の関数
@@ -576,9 +611,9 @@ class SpeechRecogServer(Node):
                 rec = KaldiRecognizer(self.model_vosk, wf.getframerate(), self.dicts[dictionary_type])
             except Exception as e:
                 # 指定された辞書が見つからなかった場合は，辞書無しでの認識を行う
-                self.logtrace(e)
-                self.logwarn("cannot use selected dictionary")
-                self.logwarn("use dictionary is " + dictionary_type)
+                self.get_logger().trace(f"{e}")
+                self.get_logger().warn("cannot use selected dictionary")
+                self.get_logger().warn("use dictionary is " + dictionary_type)
                 rec = KaldiRecognizer(self.model_vosk, wf.getframerate())
 
         rec.SetWords(True)
@@ -624,10 +659,10 @@ class SpeechRecogServer(Node):
     #     Rerutns:
     #         path(str): 音声強調後のファイルパス
     #     """
-    #     self.loginfo("start speech enhancement")
+    #     self.get_logger().info("start speech enhancement")
 
     #     filename = path.split('/')[-1]
-    #     self.logdebug(filename)
+    #     self.get_logger().debug(filename)
 
     #     # Load wav
     #     y, _ = load(path)
@@ -659,13 +694,23 @@ class SpeechRecogServer(Node):
     #     return join(self.audio_data_dir, filename)
 
 
+def main():
+    rclpy.init()
+    node = SpeechRecognitionServer()
+    executor = MultiThreadedExecutor()  # マルチスレッドエグゼキュータを作成
+    executor.add_node(node)
+    executor.spin()  # spin()を呼び出し、非同期でNodeを実行
+    node.destroy_node()
+    rclpy.shutdown()
+
+#     rclpy.init()
+#     node = SpeechRecognitionServer()
+#     rclpy.spin(node)
+#     node.destroy_node()
+#     rclpy.shutdown()
+
+
+
+
 if __name__ == "__main__":
-    # ROSのノードを初期化
-    rospy.init_node('speech_recognition_server')
-
-    # インスタンスを作成
-    srs = SpeechRecogServer()
-    rospy.on_shutdown(srs.delete)
-
-    while not rospy.is_shutdown():
-        rospy.sleep(0.1)
+    main()
