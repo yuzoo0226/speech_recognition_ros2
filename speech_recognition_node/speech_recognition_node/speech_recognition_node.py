@@ -7,6 +7,7 @@ import sys
 import time
 import json
 import wave
+import random
 import shutil
 import pprint
 import pyaudio
@@ -219,6 +220,8 @@ class SpeechRecognitionServer(Node):
         self.whisper_prompt = ""
         self.language = ""
         self.dictionary = ""
+        self.feedback_signal = False
+        self.fillers = ["えーっと．", "うーんと．", "えっとね．"]
 
     def check_authenticate(self) -> bool:
         """OpenAIのAPIキーが認証されているかを検証する関数
@@ -324,6 +327,7 @@ class SpeechRecognitionServer(Node):
         # 音声認識の結果が出るまで待機
         # self.action_signalは音声認識結果が得られた時点でFalseに変わる
         start_time = self.get_clock().now()
+        self.feedback_signal = False
         while self.action_signal:
             if (self.get_clock().now() - start_time) > Duration(seconds=30):  # 30
                 self.action_signal = False
@@ -331,6 +335,12 @@ class SpeechRecognitionServer(Node):
                 # self.ring_buffer.clear()
                 self.get_logger().info("タイムアウトによる音声認識の強制終了")
             self.get_clock().sleep_for(Duration(seconds=1.5))
+
+            if self.feedback_signal:
+                self.feedback_signal = False
+                feedback = SpeechRecognition.Feedback()
+                feedback.status = random.choice(self.fillers)
+                goal_handle.publish_feedback(feedback)
 
         # 認識結果をクライアントに送信
         result = SpeechRecognition.Result()
@@ -485,6 +495,7 @@ class SpeechRecognitionServer(Node):
                 self.save_counter += 1
 
             self.get_logger().info("stop recording")
+            self.feedback_signal = True
             self.make_wave_file(self.audio_path)
 
             # アクションから与えられた信号をもとに，音声認識のモデルなどを変更するchange
@@ -690,19 +701,11 @@ class SpeechRecognitionServer(Node):
 def main():
     rclpy.init()
     node = SpeechRecognitionServer()
-    executor = MultiThreadedExecutor()  # マルチスレッドエグゼキュータを作成
+    executor = MultiThreadedExecutor()
     executor.add_node(node)
-    executor.spin()  # spin()を呼び出し、非同期でNodeを実行
+    executor.spin()
     node.destroy_node()
     rclpy.shutdown()
-
-#     rclpy.init()
-#     node = SpeechRecognitionServer()
-#     rclpy.spin(node)
-#     node.destroy_node()
-#     rclpy.shutdown()
-
-
 
 
 if __name__ == "__main__":
