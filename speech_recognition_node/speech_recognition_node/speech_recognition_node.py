@@ -374,7 +374,7 @@ class SpeechRecognitionServer(Node):
         sound = sound.squeeze()  # depends on the use case
         return sound
 
-    def is_speech_by_silero_vad(self, audio_chunk: bytes, th=0.0001) -> bool:
+    def is_speech_by_silero_vad(self, audio_chunk: bytes, th=0.5) -> bool:
         """
         silerovadによる発話検出
         Args:
