@@ -37,6 +37,7 @@ from rclpy.action import ActionServer
 from audio_common.utils import msg_to_array, msg_to_data
 from audio_common_msgs.msg import AudioStamped
 from ament_index_python.packages import get_package_share_directory
+from rclpy.qos import qos_profile_sensor_data, QoSProfile, ReliabilityPolicy
 
 # # 音声強調に必要なモジュール
 # sys.path.append(roslib.packages.get_pkg_dir("tam_speech_recog"))
@@ -75,6 +76,7 @@ class SpeechRecognitionServer(Node):
         self.declare_parameter("speech_recognition/whisper_model", "medium")
         self.declare_parameter("speech_recognition/time_out", 10)
         self.declare_parameter("speech_recognition/beep_sound", True)
+        self.declare_parameter("speech_recognition/pub_probability", True)
 
         self.sampling_rate = self.get_parameter("speech_recognition/sampling_rate").value
         self.channels = self.get_parameter("speech_recognition/channels").value
@@ -86,11 +88,18 @@ class SpeechRecognitionServer(Node):
         self.whisper_model_type = self.get_parameter("speech_recognition/whisper_model").value
         self.time_out = self.get_parameter("speech_recognition/time_out").value
         self.beep_sound = self.get_parameter("speech_recognition/beep_sound").value
+        self.is_pub_probability = self.get_parameter("speech_recognition/pub_probability").value
 
         self.output_dir = os.path.join(get_package_share_directory('speech_recognition_node'), 'io/output')
 
         # ros interface
         self._audio_sub = self.create_subscription(AudioStamped, "audio", self.audio_cb, qos_profile_sensor_data)
+
+        custom_qos_profile = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+        )
+        self._prob_pub = self.create_publisher(Float32, "/speech/probability", custom_qos_profile)
 
         # TODO(yano) Audio messageの配信ノードの動作開始/ストップの制御
         # self.srv_audio_publisher = self.create_client(SetBool, '/audio_publisher/run_enable')
@@ -134,9 +143,6 @@ class SpeechRecognitionServer(Node):
         self.voiced_frames = []
         self.current_frame = None
 
-        # voice activity detectionの初期化
-        # self.vad = webrtcvad.Vad(self.vad_aggressiveness)
-
         # アクションサーバからの信号をもとにしたフラグ
         self.recognition_result = None
         self.recognition_type = "whisper"
@@ -163,40 +169,12 @@ class SpeechRecognitionServer(Node):
         # whisperの認識モデル初期化
         # self.model_whisper = whisper.load_model(self.whisper_model_type)
 
-        # voskの認識モデル初期化
-        # self.model_vosk = Model(lang="en-us")
-
-        # pyaudioを初期化
-        # self.p = pyaudio.PyAudio()
-
-        # ストリームを開始
-        # self.stream = self.p.open(
-        #     format=self.p.get_format_from_width(self.sample_width),
-        #     channels=self.channels,
-        #     rate=self.sampling_rate,
-        #     output=True,
-        #     frames_per_buffer=self.chunk
-        # )
-
         # 話している時間のタイムアウト処理のための変数初期化
         self.record_start_time = self.get_clock().now()
 
         # Image pub
         # self.image = rospy.Publisher('/show_image/data', Image, queue_size=10)
         # self.bridge = CvBridge()
-
-        # # 音声強調に必要なパラメタ
-        # self.corrector_steps = 1
-        # self.corrector_cls = "ald"
-        # self.N = 30
-        # self.snr = 0.5
-        # # self.sr = 16000
-        # self.sgmse_checkpoint_file = self.audio_path = roslib.packages.get_pkg_dir("tam_speech_recog") + "/io/checkpoint/train_wsj0_2cta4cov_epoch=159.ckpt"
-
-        # # Load score model
-        # self.model = ScoreModel.load_from_checkpoint(self.sgmse_checkpoint_file, base_dir='', batch_size=16, num_workers=0, kwargs=dict(gpu=False))
-        # self.model.eval(no_ema=False)
-        # self.model.cuda()
 
         self.silero_vad_model, _ = torch.hub.load(
             repo_or_dir='snakers4/silero-vad',
@@ -388,6 +366,12 @@ class SpeechRecognitionServer(Node):
 
         # get the confidences and add them to the list to plot them later
         confidence = self.silero_vad_model(torch.from_numpy(audio_float32), 16000).item()
+
+        if self.is_pub_probability:
+            prob_msg = Float32()
+            prob_msg.data = confidence
+            self._prob_pub.publish(prob_msg)
+
         self.get_logger().info(f"confidence: {confidence}")
 
         if confidence > th:

@@ -38,7 +38,7 @@ class RecognitionUtils(Node):
         self._get_result_future.add_done_callback(self.get_result_callback)
 
     def feedback_callback(self, feedback_msg):
-        self.get_logger().info(f'Feedback: {feedback_msg.feedback.status_message} (Current distance: {feedback_msg.feedback.current_distance})')
+        self.get_logger().info(f'Feedback: {feedback_msg.feedback.status}')
 
     def get_result_callback(self, future):
         result = future.result().result
